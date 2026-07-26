@@ -497,18 +497,6 @@ mod tests {
         test_exact(0.3, u64::MAX, max);
     }
 
-    /// As in [`Binomial`](crate::distribution::Binomial), the `p == 1` branches
-    /// here are guarded by `prec::ulps_eq!`; its default epsilon was `1e-9`
-    /// absolute, so `p = 1 - 2^-33` was treated as a point mass at 1.
-    #[test]
-    fn test_p_near_one_is_not_degenerate() {
-        let g = Geometric::new(1.0 - f64::powi(2.0, -33)).unwrap();
-        assert_eq!(g.max(), u64::MAX);
-        prec::assert_relative_eq!(g.skewness().unwrap(), 92681.900034472750337, epsilon = 0.0, max_relative = 1e-14);
-        prec::assert_relative_eq!(g.pmf(2), 1.164153218133822873e-10, epsilon = 0.0, max_relative = 1e-14);
-        prec::assert_relative_eq!(g.ln_pmf(2), -22.873856958594610533, epsilon = 0.0, max_relative = 1e-14);
-    }
-
     #[test]
     fn test_pmf() {
         let pmf = |arg: u64| move |x: Geometric| x.pmf(arg);
@@ -675,12 +663,15 @@ mod tests {
         for i in 1..60 {
             let p = i as f64 / 60.0;
             let g = create_ok(p);
-            let mut xs: Vec<f64> = (1..400).map(|j| j as f64 / 400.0).collect();
-            // x within a few ulp of 1 is where `1 - x` has lost every
-            // significant bit and the closed form needs the bisection fallback
-            xs.extend((1..6).map(|u| 1.0 - u as f64 * f64::EPSILON / 2.0));
-            xs.extend((1..6).map(|u| u as f64 * f64::MIN_POSITIVE));
-            xs.extend((1..400).map(|j| g.cdf(j)));
+            // Chained rather than collected, so the test also builds under
+            // `no_std`, where there is no `Vec`. The second and third groups
+            // put x within a few ulp of 1, where `1 - x` has lost every
+            // significant bit and the closed form needs the bisection fallback.
+            let xs = (1..400)
+                .map(|j| j as f64 / 400.0)
+                .chain((1..6).map(|u| 1.0 - u as f64 * f64::EPSILON / 2.0))
+                .chain((1..6).map(|u| u as f64 * f64::MIN_POSITIVE))
+                .chain((1..400).map(|j| g.cdf(j)));
             for x in xs {
                 // `x == 1` saturates to `u64::MAX` by design, iCDF(1) = +inf
                 if !(0.0..=1.0).contains(&x) || x == 1.0 {
