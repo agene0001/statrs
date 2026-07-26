@@ -273,7 +273,9 @@ mod tests {
     fn test_knn_pdf_deterministic() {
         let samples: Vec<[f64; 1]> = vec![[-3.0], [-2.0], [-1.0], [0.0], [1.0], [2.0], [3.0]];
         let got = crate::density::knn::knn_pdf(&[0.0], &samples, Some(4.0)).unwrap();
-        crate::prec::assert_relative_eq!(got, 5.0 / 28.0, epsilon = 0.0, max_relative = 1e-15);
+        // the tolerance is set by `gamma(d / 2 + 1)` in the ball-volume factor,
+        // not by anything in this module
+        crate::prec::assert_relative_eq!(got, 5.0 / 28.0, epsilon = 0.0, max_relative = 1e-14);
     }
 
     /// The prepared estimator must be bit-identical to the free functions - it

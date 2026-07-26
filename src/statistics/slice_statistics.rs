@@ -504,6 +504,36 @@ mod tests {
 
     // TODO: test codeplex issue 5667 (Math.NET)
 
+    /// `select_inplace` used to implement the Numerical Recipes quickselect by
+    /// hand, whose partition loop walks off the end of the array when the slice
+    /// contains NaN (statrs-dev/statrs#163). `total_cmp` gives NaN a defined
+    /// place in a total order, so the search stays in bounds.
+    #[test]
+    fn test_order_statistics_with_nan_do_not_panic() {
+        let mut v: Vec<f64> = (0..1000).map(|i| (i as f64 * 0.7).sin()).collect();
+        for i in (0..1000).step_by(7) {
+            v[i] = f64::NAN;
+        }
+        let mut d = Data::new(v);
+        // the values themselves are unspecified once NaN is present; what is
+        // being pinned is that these terminate in bounds
+        let _ = d.quantile(0.5);
+        let _ = d.quantile(0.0);
+        let _ = d.quantile(1.0);
+        let _ = d.order_statistic(500);
+        let _ = OrderStatistics::median(&mut d);
+        let _ = d.interquartile_range();
+
+        // all-NaN, and NaN at the exact positions the old partition tripped on
+        let mut all_nan = Data::new(vec![f64::NAN; 64]);
+        let _ = all_nan.quantile(0.5);
+        for pos in [0usize, 1, 31, 62, 63] {
+            let mut v = vec![0.0f64; 64];
+            v[pos] = f64::NAN;
+            let _ = Data::new(v).quantile(0.5);
+        }
+    }
+
     #[test]
     fn test_median_robust_on_infinities() {
         let data3 = [2.0, f64::NEG_INFINITY, f64::INFINITY];

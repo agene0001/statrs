@@ -649,32 +649,10 @@ mod tests {
         test_exact(0.3, 10, 10, max);
     }
 
-    /// Large-`n` pmf: the saddle-point form (`gamma::bd0` /
-    /// `gamma::stirling_delta`, with double-double means) replaced
-    /// `exp(ln_binomial + x ln p + (n-x) ln q)`, whose terms each grow like
-    /// `n ln n` while the result stays `O(1)`. References are mpmath at 40
-    /// significant digits; the old form was ~7e-11 relative here.
-    #[test]
-    fn test_pmf_large_n_saddle_point() {
-        let pmf = |arg: u64| move |x: Binomial| x.pmf(arg);
-        test_relative(0.5, 100000, 0.0025231262141967398855, pmf(50000));
-        test_relative(0.3, 2000000, 0.00061558120658465376062, pmf(600000));
-        // ln_pmf agrees with ln(pmf) where the pmf is comfortably representable
-        for (p, n, k) in [(0.5f64, 100000u64, 50000u64), (0.3, 2000000, 600000)] {
-            let d = create_ok(p, n);
-            prec::assert_relative_eq!(d.ln_pmf(k), d.pmf(k).ln(), epsilon = 0.0, max_relative = 1e-14);
-        }
-        // the endpoints reduce to q^n and p^n; `exp(n ln q)` carries ~1e-15
-        // relative (|n ln q| ~ 11.5 here), which is the honest bound
-        let d = create_ok(0.25, 40);
-        prec::assert_relative_eq!(d.pmf(0), 1.0056585161637497e-5, epsilon = 0.0, max_relative = 1e-14);
-        prec::assert_relative_eq!(d.pmf(40), 8.271806125530277e-25, epsilon = 0.0, max_relative = 1e-14);
-    }
-
     /// `p` very close to but not equal to 1 must take the general path, not the
     /// degenerate `p == 1` branch. The branch is guarded by `prec::ulps_eq!`,
-    /// whose default epsilon used to be `1e-9` absolute, so any `p` within
-    /// `1e-9` of 1 collapsed to a point mass at `n`.
+    /// whose default epsilon was `1e-9` *absolute*, so any `p` within `1e-9` of
+    /// 1 collapsed to a point mass at `n`.
     ///
     /// `1 - 2^-33` is used rather than `1 - 1e-10` so that `1 - p` is exact and
     /// the reference values are not limited by the representation of `p`.
@@ -702,6 +680,28 @@ mod tests {
             prec::assert_relative_eq!(h, approx, epsilon = 0.0, max_relative = 1e-3);
         }
         assert!(Binomial::new(0.1, 5_000).unwrap().entropy().unwrap().is_finite());
+    }
+
+    /// Large-`n` pmf: the saddle-point form (`gamma::bd0` /
+    /// `gamma::stirling_delta`, with double-double means) replaced
+    /// `exp(ln_binomial + x ln p + (n-x) ln q)`, whose terms each grow like
+    /// `n ln n` while the result stays `O(1)`. References are mpmath at 40
+    /// significant digits; the old form was ~7e-11 relative here.
+    #[test]
+    fn test_pmf_large_n_saddle_point() {
+        let pmf = |arg: u64| move |x: Binomial| x.pmf(arg);
+        test_relative(0.5, 100000, 0.0025231262141967398855, pmf(50000));
+        test_relative(0.3, 2000000, 0.00061558120658465376062, pmf(600000));
+        // ln_pmf agrees with ln(pmf) where the pmf is comfortably representable
+        for (p, n, k) in [(0.5f64, 100000u64, 50000u64), (0.3, 2000000, 600000)] {
+            let d = create_ok(p, n);
+            prec::assert_relative_eq!(d.ln_pmf(k), d.pmf(k).ln(), epsilon = 0.0, max_relative = 1e-14);
+        }
+        // the endpoints reduce to q^n and p^n; `exp(n ln q)` carries ~1e-15
+        // relative (|n ln q| ~ 11.5 here), which is the honest bound
+        let d = create_ok(0.25, 40);
+        prec::assert_relative_eq!(d.pmf(0), 1.0056585161637497e-5, epsilon = 0.0, max_relative = 1e-14);
+        prec::assert_relative_eq!(d.pmf(40), 8.271806125530277e-25, epsilon = 0.0, max_relative = 1e-14);
     }
 
     #[test]
@@ -859,7 +859,6 @@ mod tests {
         density_util::check_discrete_distribution(&create_ok(0.3, 5), 5);
         density_util::check_discrete_distribution(&create_ok(0.7, 10), 10);
     }
-
     /// Chi-square goodness-of-fit of the BINV/BTPE sampler against the exact
     /// pmf, over parameter sets covering every code path: BINV (np < 10), BTPE
     /// (np >= 10), and both flipped (p > 0.5) variants. Seeds are fixed, so
