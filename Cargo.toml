@@ -39,12 +39,12 @@ rand = ["dep:rand", "nalgebra?/rand-no-std", "rand?/std_rng"]
 kde = ["dep:kdtree", "nalgebra"]
 
 [dependencies]
-approx = { version = "0.5.0", default-features = false }
-num-traits = { version = "0.2.14", default-features = false, features = ["libm"] }
-thiserror = { version = "2.0", default-features = false }
+approx = { version = "0.5.1", default-features = false }
+num-traits = { version = "0.2.19", default-features = false, features = ["libm"] }
+thiserror = { version = "2.0.19", default-features = false }
 
 [dependencies.rand]
-version = "0.10.0"
+version = "0.10.2"
 optional = true
 default-features = false
 
@@ -58,8 +58,8 @@ version = "0.8.1"
 optional = true
 
 [dev-dependencies]
-criterion = "0.8"
-anyhow = "1.0"
+criterion = "0.8.2"
+anyhow = "1.0.104"
 
 [dev-dependencies.nalgebra]
 version = "0.35"
