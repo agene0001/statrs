@@ -138,16 +138,48 @@ fn exp_neg_square(u: f64) -> f64 {
     (-sq).exp() * (1.0 - err)
 }
 
-/// `-u^2` exactly, as the leading term of a log-domain result.
-fn neg_square_exact(u: f64) -> f64 {
+/// `-u^2` as an unevaluated sum `(hi, lo)`, exact to twice working precision.
+///
+/// Returned as a pair rather than summed. `lo` is at most half an ulp of `hi`,
+/// so `hi - lo` rounds straight back to `hi` and discards it; it survives only
+/// if folded into the final total, which [`add_log_term`] does.
+fn neg_square_parts(u: f64) -> (f64, f64) {
     let sq = u * u;
-    -sq - crate::prec::dekker_product_err(u, u, sq)
+    (-sq, -crate::prec::dekker_product_err(u, u, sq))
+}
+
+/// `hi + lo + log_term`, keeping `lo` in play across the addition so it can
+/// still tip the final rounding.
+fn add_log_term((hi, lo): (f64, f64), log_term: f64) -> f64 {
+    let (s, e) = crate::prec::two_sum(hi, log_term);
+    s + (e + lo)
 }
 
 impl core::fmt::Display for InverseGaussian {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         write!(f, "IG({},{})", self.mu, self.lambda)
     }
+}
+
+/// The smaller root of the Michael-Schucany-Haas quadratic for a standard
+/// normal draw `z`.
+///
+/// Kept free of the RNG so the boundary cases are testable: `z` really can be
+/// exactly zero, since the ziggurat draws `u = 2f - 1` from a 53-bit `f` and
+/// `f == 0.5` is one of the values it can take.
+///
+/// The textbook root `mu + (mu / 2 lambda) (mnu - sqrt(mnu (4 lambda + mnu)))`
+/// cancels catastrophically for `mnu >> lambda`. Rationalizing removes the
+/// subtraction, but the obvious rationalized form divides by
+/// `mnu + sqrt(mnu (4 lambda + mnu))`, which is `0/0` at `z == 0`. Pulling
+/// `sqrt(mnu)` out of the radical cancels it against the numerator and leaves a
+/// denominator bounded below by `2 sqrt(lambda)`, so the expression is finite
+/// throughout and tends to `mu` as it should.
+#[cfg(feature = "rand")]
+fn msh_smaller_root(mu: f64, lambda: f64, z: f64) -> f64 {
+    let mnu = mu * z * z;
+    let s = mnu.sqrt();
+    mu - 2.0 * mu * s / (s + (4.0 * lambda + mnu).sqrt())
 }
 
 #[cfg(feature = "rand")]
@@ -159,12 +191,7 @@ impl ::rand::distr::Distribution<f64> for InverseGaussian {
     /// selected with the appropriate probability.
     fn sample<R: ::rand::Rng + ?Sized>(&self, rng: &mut R) -> f64 {
         let z = crate::distribution::ziggurat::sample_std_normal(rng);
-        let nu = z * z;
-        let mnu = self.mu * nu;
-        // The textbook root `mu + (mu / 2 lambda) (mnu - sqrt(mnu (4 lambda +
-        // mnu)))` cancels catastrophically for `mnu >> lambda`; rationalizing
-        // gives this equivalent, subtraction-free form.
-        let y = self.mu - (2.0 * self.mu * mnu) / (mnu + (mnu * (4.0 * self.lambda + mnu)).sqrt());
+        let y = msh_smaller_root(self.mu, self.lambda, z);
         let u: f64 = ::rand::RngExt::random(rng);
         if u <= self.mu / (self.mu + y) {
             y
@@ -251,7 +278,7 @@ impl ContinuousCDF<f64, f64> for InverseGaussian {
     /// The absolute error of a log is the relative error of the probability it
     /// represents, so that is the metric quoted here. Wherever the cdf is a
     /// representable nonzero `f64`, the measured absolute error is `1.1e-23`
-    /// median and `2.4e-13` worst case - i.e. the implied probability is good
+    /// median and `1.2e-13` worst case - i.e. the implied probability is good
     /// to at least 12 significant digits, against the 1179 ulp that [`Self::cdf`]
     /// can lose there.
     ///
@@ -271,7 +298,10 @@ impl ContinuousCDF<f64, f64> for InverseGaussian {
         let (um, up) = self.erfc_args(x);
         if um <= 0.0 {
             // both scaled terms are positive here, so this sum never cancels
-            neg_square_exact(um) + (0.5 * (erf::erfcx(-um) + erf::erfcx(up))).ln()
+            add_log_term(
+                neg_square_parts(um),
+                (0.5 * (erf::erfcx(-um) + erf::erfcx(up))).ln(),
+            )
         } else {
             (-self.sf_scaled(um, up, x)).ln_1p()
         }
@@ -294,7 +324,7 @@ impl ContinuousCDF<f64, f64> for InverseGaussian {
         }
         let (um, up) = self.erfc_args(x);
         if um > 0.0 {
-            neg_square_exact(um) + (0.5 * self.erfcx_gap(um, up, x)).ln()
+            add_log_term(neg_square_parts(um), (0.5 * self.erfcx_gap(um, up, x)).ln())
         } else {
             (-self.cdf_scaled(um, up)).ln_1p()
         }
@@ -412,9 +442,19 @@ impl Mode<Option<f64>> for InverseGaussian {
     /// ```text
     /// μ [sqrt(1 + 9μ^2 / (4λ^2)) - 3μ / (2λ)]
     /// ```
+    ///
+    /// evaluated in the equivalent form `λ / (sqrt((λ/μ)^2 + 9/4) + 3/2)`.
+    ///
+    /// # Remarks
+    ///
+    /// The bracket above is a difference of two terms that converge as `μ/λ`
+    /// grows, so it cancels: at `μ = 1e8, λ = 1` both are `1.5e8` to working
+    /// precision and it evaluates to `0` rather than `1/3`. Multiplying through
+    /// by the conjugate removes the subtraction entirely, and the reciprocal
+    /// form also keeps the squared term from overflowing.
     fn mode(&self) -> Option<f64> {
-        let r = self.mu / self.lambda;
-        Some(self.mu * ((1.0 + 2.25 * r * r).sqrt() - 1.5 * r))
+        let r = self.lambda / self.mu;
+        Some(self.lambda / ((r * r + 2.25).sqrt() + 1.5))
     }
 }
 
@@ -515,6 +555,88 @@ mod tests {
         let mode = |x: InverseGaussian| x.mode().unwrap();
         test_absolute(1.0, 1.0, 0.3027756377319946465596, 1e-15, mode);
         test_absolute(2.0, 3.0, 0.8284271247461900976034, 1e-15, mode);
+    }
+
+    /// The textbook bracket `sqrt(1 + 9u^2/4L^2) - 3u/2L` differences two terms
+    /// that converge as `mu/lambda` grows (statrs-dev/statrs#423). References
+    /// are mpmath, but computed from the conjugate form: evaluating the
+    /// textbook one at `mu = 1e150` needs about 400 digits to get an answer at
+    /// all, and returns zero at 50.
+    #[test]
+    fn test_mode_does_not_cancel() {
+        let mode = |x: InverseGaussian| x.mode().unwrap();
+        test_relative(1e8, 1.0, 0.33333333333333332963, mode);
+        test_relative(1e6, 1.0, 0.3333333333332962963, mode);
+        test_relative(1.0, 1e8, 0.9999999850000001125, mode);
+        test_relative(1e-8, 1.0, 9.9999998500000013342e-9, mode);
+        // mu^2 overflows f64 here, so the squared term has to stay out of the
+        // expression entirely, not merely be evaluated carefully
+        test_relative(1e150, 1.0, 1.0 / 3.0, mode);
+        test_relative(1e300, 1.0, 1.0 / 3.0, mode);
+
+        // the mode is in the support, and below the mean, for every case above
+        for &(mu, lambda) in &[
+            (1e8, 1.0),
+            (1e6, 1.0),
+            (1.0, 1e8),
+            (1e-8, 1.0),
+            (1e150, 1.0),
+            (1.0, 1.0),
+        ] {
+            let d = create_ok(mu, lambda);
+            let m = d.mode().unwrap();
+            assert!(m > 0.0 && m.is_finite(), "mu={mu:e} lambda={lambda:e}: mode {m}");
+            assert!(m <= mu, "mu={mu:e} lambda={lambda:e}: mode {m} exceeds the mean");
+        }
+    }
+
+    /// `z` can be exactly zero -- the ziggurat forms `u = 2f - 1` from a 53-bit
+    /// `f`, and `f == 0.5` is one of its values (statrs-dev/statrs#423). The
+    /// rationalized root divided by `mnu + sqrt(mnu (4 lambda + mnu))`, which
+    /// is `0/0` there, so every draw from such a `z` was NaN.
+    #[cfg(feature = "rand")]
+    #[test]
+    fn test_msh_root_at_zero() {
+        use super::msh_smaller_root;
+
+        for &(mu, lambda) in &[(1.0, 1.0), (2.0, 3.0), (0.1, 1000.0), (10.0, 0.1)] {
+            let at_zero = msh_smaller_root(mu, lambda, 0.0);
+            assert!(at_zero.is_finite(), "mu={mu} lambda={lambda}: {at_zero}");
+            // nu = 0 puts the root at the mean
+            assert_eq!(at_zero, mu, "mu={mu} lambda={lambda}");
+
+            // and it is continuous into that corner rather than merely defined
+            for &z in &[1e-300f64, 1e-160, 1e-8, 1e-4] {
+                let y = msh_smaller_root(mu, lambda, z);
+                assert!(y.is_finite() && y > 0.0, "mu={mu} lambda={lambda} z={z:e}: {y}");
+                assert!(y <= mu, "mu={mu} lambda={lambda} z={z:e}: {y} exceeds mu");
+            }
+
+            // ordinary draws stay in the support
+            for i in 1..200 {
+                let z = -6.0 + i as f64 * 0.06;
+                let y = msh_smaller_root(mu, lambda, z);
+                assert!(y > 0.0 && y.is_finite(), "mu={mu} lambda={lambda} z={z}: {y}");
+            }
+        }
+    }
+
+    /// A sample is never NaN, over the full path including the conjugate branch.
+    #[cfg(feature = "rand")]
+    #[test]
+    fn test_samples_are_finite_and_positive() {
+        use ::rand::SeedableRng;
+        use ::rand::distr::Distribution as _;
+        use ::rand::rngs::StdRng;
+
+        for &(mu, lambda) in &[(1.0, 1.0), (2.0, 3.0), (0.1, 1000.0), (10.0, 0.1)] {
+            let d = create_ok(mu, lambda);
+            let mut rng = StdRng::seed_from_u64(0x16 + (mu as u64));
+            for _ in 0..20_000 {
+                let x: f64 = d.sample(&mut rng);
+                assert!(x.is_finite() && x > 0.0, "mu={mu} lambda={lambda}: sampled {x}");
+            }
+        }
     }
 
     #[test]
