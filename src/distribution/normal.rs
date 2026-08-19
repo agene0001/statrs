@@ -2,7 +2,7 @@ use crate::consts;
 use crate::distribution::{Continuous, ContinuousCDF};
 use crate::function::erf;
 use crate::statistics::*;
-use core::f64;
+use core::f64::consts as f64_consts;
 #[cfg(not(feature = "std"))]
 use num_traits::Float as _;
 
@@ -187,7 +187,7 @@ impl ContinuousCDF<f64, f64> for Normal {
         if !(0.0..=1.0).contains(&x) {
             panic!("x must be in [0, 1]");
         } else {
-            self.mean - (self.std_dev * f64::consts::SQRT_2 * erf::erfc_inv(2.0 * x))
+            self.mean - (self.std_dev * f64_consts::SQRT_2 * erf::erfc_inv(2.0 * x))
         }
     }
 }
@@ -355,7 +355,7 @@ const SQRT_2_LO: f64 = -9.667293313452913e-17;
 #[inline]
 fn half_erfc(a: f64, b: f64, std_dev: f64) -> f64 {
     let (d, d_err) = two_diff(a, b);
-    let s = std_dev * f64::consts::SQRT_2;
+    let s = std_dev * f64_consts::SQRT_2;
     // An infinite `x` makes `d` infinite, and a `std_dev` near `f64::MAX` makes
     // `s` infinite; `d / s` is then `inf / inf == NaN`. Both limits are
     // well defined, so take them directly rather than returning NaN.
@@ -386,10 +386,10 @@ fn half_erfc(a: f64, b: f64, std_dev: f64) -> f64 {
     let r = (d - p) - dekker_product_err(t, s, p);
     // s itself is short of sigma * sqrt(2) by its product rounding error and
     // by sigma * SQRT_2_LO
-    let s_err = dekker_product_err(std_dev, f64::consts::SQRT_2, s) + std_dev * SQRT_2_LO;
+    let s_err = dekker_product_err(std_dev, f64_consts::SQRT_2, s) + std_dev * SQRT_2_LO;
     let delta = (r + d_err - t * s_err) / s;
     // erfc'(t) = -2/sqrt(pi) * exp(-t^2); halved for the 0.5 * erfc form
-    half - 0.5 * f64::consts::FRAC_2_SQRT_PI * (-t * t).exp() * delta
+    half - 0.5 * f64_consts::FRAC_2_SQRT_PI * (-t * t).exp() * delta
 }
 
 /// Log-domain companion of [`half_erfc`]: computes
@@ -401,7 +401,7 @@ fn half_erfc(a: f64, b: f64, std_dev: f64) -> f64 {
 /// `ln erfc(t + delta) ~= ln erfc(t) + (d ln erfc / dt) delta`.
 fn ln_half_erfc(a: f64, b: f64, std_dev: f64) -> f64 {
     let (d, d_err) = two_diff(a, b);
-    let s = std_dev * f64::consts::SQRT_2;
+    let s = std_dev * f64_consts::SQRT_2;
     if d.is_nan() {
         return f64::NAN;
     }
@@ -410,10 +410,10 @@ fn ln_half_erfc(a: f64, b: f64, std_dev: f64) -> f64 {
     }
     if !s.is_finite() {
         // sigma so large the distribution is flat over any finite difference
-        return -f64::consts::LN_2;
+        return -f64_consts::LN_2;
     }
     let t = d / s;
-    let base = erf::ln_erfc(t) - f64::consts::LN_2;
+    let base = erf::ln_erfc(t) - f64_consts::LN_2;
     if !(1.5..1e300).contains(&t) || s > 1e300 {
         // t < 1.5: amplification negligible (and for t < 0, erfc -> 2 with a
         // vanishing derivative). Bounds also keep the Dekker splits below away
@@ -424,12 +424,12 @@ fn ln_half_erfc(a: f64, b: f64, std_dev: f64) -> f64 {
     // as in `half_erfc`
     let p = t * s;
     let r = (d - p) - dekker_product_err(t, s, p);
-    let s_err = dekker_product_err(std_dev, f64::consts::SQRT_2, s) + std_dev * SQRT_2_LO;
+    let s_err = dekker_product_err(std_dev, f64_consts::SQRT_2, s) + std_dev * SQRT_2_LO;
     let delta = (r + d_err - t * s_err) / s;
     // d/dt ln erfc = -2/sqrt(pi) e^(-t^2) / erfc(t); past the representable
     // range of erfc use its asymptotic -(2t + 1/t)
     let dln = if t < 26.0 {
-        -f64::consts::FRAC_2_SQRT_PI * (-t * t).exp() / erf::erfc(t)
+        -f64_consts::FRAC_2_SQRT_PI * (-t * t).exp() / erf::erfc(t)
     } else {
         -(2.0 * t + 1.0 / t)
     };

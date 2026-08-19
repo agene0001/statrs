@@ -6,6 +6,7 @@ use crate::function::evaluate;
 use crate::prec;
 use crate::prec::{dekker_product_err, two_diff};
 use core::f64;
+use core::f64::consts as f64_consts;
 #[cfg(not(feature = "std"))]
 use num_traits::Float as _;
 
@@ -359,13 +360,13 @@ pub fn ln_gamma(x: f64) -> f64 {
             - sin_pi(x).ln()
             - s.ln()
             - consts::LN_2_SQRT_E_OVER_PI
-            - (0.5 - x) * ((0.5 - x + GAMMA_R) / f64::consts::E).ln()
+            - (0.5 - x) * ((0.5 - x + GAMMA_R) / f64_consts::E).ln()
     } else {
         let s = lanczos_sum(x);
 
         s.ln()
             + consts::LN_2_SQRT_E_OVER_PI
-            + (x - 0.5) * ((x - 0.5 + GAMMA_R) / f64::consts::E).ln()
+            + (x - 0.5) * ((x - 0.5 + GAMMA_R) / f64_consts::E).ln()
     }
 }
 
@@ -786,7 +787,7 @@ pub fn digamma(x: f64) -> f64 {
     if x == f64::NEG_INFINITY || x.is_nan() {
         return f64::NAN;
     }
-    if x <= 0.0 && prec::ulps_eq!(x.floor(), x) {
+    if x <= 0.0 && x.floor() == x {
         return f64::NEG_INFINITY;
     }
     if x < 0.0 {
@@ -1027,7 +1028,7 @@ mod tests {
         );
         prec::assert_abs_diff_eq!(
             super::ln_gamma(3.0),
-            f64::consts::LN_2,
+            f64_consts::LN_2,
             epsilon = 1e-14
         );
         prec::assert_abs_diff_eq!(
@@ -1713,6 +1714,11 @@ mod tests {
             2.2622143570941481235561593642219403924532310597356171,
             epsilon = 1e-14
         );
+    }
+
+    #[test]
+    fn test_digamma_near_negative_integer_is_finite() {
+        assert!(super::digamma(-1.0 + 5e-10).is_finite());
     }
 
     #[test]

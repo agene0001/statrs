@@ -3,7 +3,7 @@
 
 use crate::consts;
 use crate::function::evaluate;
-use core::f64;
+use core::f64::consts as f64_consts;
 #[cfg(not(feature = "std"))]
 use num_traits::Float as _;
 
@@ -79,7 +79,7 @@ pub fn erfcx(x: f64) -> f64 {
             let (r, b) = erfc_fraction(x);
             return (b + r) / x;
         }
-        return (1.0 + erfc_asymptotic_correction(x)) * (0.5 * f64::consts::FRAC_2_SQRT_PI) / x;
+        return (1.0 + erfc_asymptotic_correction(x)) * (0.5 * f64_consts::FRAC_2_SQRT_PI) / x;
     }
     // |x| < 0.5, or negative.
     //
@@ -868,7 +868,6 @@ fn erf_inv_impl(p: f64, q: f64, s: f64) -> f64 {
 #[rustfmt::skip]
 #[cfg(test)]
 mod tests {
-    use core::f64;
     use super::*;
     use crate::prec;
 

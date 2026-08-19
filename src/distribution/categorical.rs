@@ -1,6 +1,8 @@
 use crate::distribution::{Discrete, DiscreteCDF};
 use crate::statistics::*;
-use core::f64;
+use alloc::vec::Vec;
+#[cfg(not(feature = "std"))]
+use num_traits::Float as _;
 
 /// Implements the
 /// [Categorical](https://en.wikipedia.org/wiki/Categorical_distribution)

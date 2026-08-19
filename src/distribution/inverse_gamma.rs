@@ -1,8 +1,6 @@
 use crate::distribution::{Continuous, ContinuousCDF};
 use crate::function::gamma;
-use crate::prec;
 use crate::statistics::*;
-use core::f64;
 #[cfg(not(feature = "std"))]
 use num_traits::Float as _;
 
@@ -173,6 +171,33 @@ impl ContinuousCDF<f64, f64> for InverseGamma {
             gamma::gamma_lr(self.shape, self.rate / x)
         }
     }
+
+    /// Calculates the inverse cumulative distribution function for the inverse
+    /// gamma distribution at `p`, i.e. the `p`-quantile.
+    ///
+    /// # Panics
+    ///
+    /// If `p` is not in `[0, 1]`.
+    fn inverse_cdf(&self, p: f64) -> f64 {
+        if !(0.0..=1.0).contains(&p) {
+            panic!("p must be in [0, 1]")
+        }
+        if p == 0.0 {
+            return self.min();
+        }
+        if p == 1.0 {
+            return self.max();
+        }
+        // The inverse gamma cdf has no closed-form inverse; solve it with the
+        // shared safeguarded Newton search instead of the generic bisection
+        // default, which loses precision far into the (very heavy) upper tail.
+        super::internal::newton_raphson_quantile(
+            p,
+            |x| self.cdf(x),
+            |x| self.sf(x),
+            |x| self.pdf(x),
+        )
+    }
 }
 
 impl Min<f64> for InverseGamma {
@@ -335,7 +360,7 @@ impl Continuous<f64, f64> for InverseGamma {
     fn pdf(&self, x: f64) -> f64 {
         if x <= 0.0 || x.is_infinite() {
             0.0
-        } else if prec::ulps_eq!(self.shape, 1.0) {
+        } else if self.shape == 1.0 {
             self.rate / (x * x) * (-self.rate / x).exp()
         } else {
             self.rate.powf(self.shape) * x.powf(-self.shape - 1.0) * (-self.rate / x).exp()
@@ -363,7 +388,8 @@ impl Continuous<f64, f64> for InverseGamma {
 mod tests {
     use super::*;
     use crate::distribution::internal::density_util;
-
+    use crate::prec;
+    use core::f64::consts as f64_consts;
 
     testing_boiler!(shape: f64, rate: f64; InverseGamma; InverseGammaError);
 
@@ -459,6 +485,22 @@ mod tests {
     }
 
     #[test]
+    fn test_pdf_for_shape_near_one() {
+        let shape = 1.0 + 5e-10;
+        let rate = 1.0;
+        let x = 1.2_f64;
+        let dist = create_ok(shape, rate);
+        let expected = rate.powf(shape) * x.powf(-shape - 1.0) * (-rate / x).exp()
+            / gamma::gamma(shape);
+        prec::assert_relative_eq!(
+            dist.pdf(x),
+            expected,
+            epsilon = 1e-15,
+            max_relative = 1e-14
+        );
+    }
+
+    #[test]
     fn test_ln_pdf() {
         let ln_pdf = |arg: f64| move |x: InverseGamma| x.ln_pdf(arg);
         test_absolute(0.1, 0.1, 0.0628591853882328004197f64.ln(), 1e-15, ln_pdf(1.2));
@@ -500,7 +542,7 @@ mod tests {
         // p = 1 - 1e-12 (quantile ~6.4e23) where the old search lost all precision.
         let cases: &[(f64, f64, f64, f64)] = &[
             (1.0, 1.0, 1e-12, 0.03619120682527099),  (1.0, 1.0, 1e-6, 0.07238241365054197),
-            (1.0, 1.0, 1e-2, 0.21714724095162594),   (1.0, 1.0, 0.5, f64::consts::LOG2_E), // median = 1/ln 2
+            (1.0, 1.0, 1e-2, 0.21714724095162594),   (1.0, 1.0, 0.5, f64_consts::LOG2_E), // median = 1/ln 2
 
             (1.0, 1.0, 0.9999, 9999.499991667344),   (1.0, 1.0, 0.99999999, 99999998.99752413),
             (1.0, 1.0, 0.999999999999, 1000022122209.0044),
@@ -530,5 +572,47 @@ mod tests {
                 assert!((back - p).abs() <= 1e-9 * p, "InverseGamma({a}, {b}) round-trip p={p}: cdf(inverse_cdf(p))={back}");
             }
         }
+    }
+
+    #[test]
+    fn test_inverse_cdf_deep_lower_tail() {
+        // A Newton step on `exp(-rate/x)` only advances `rate/x` by one however
+        // far the root is, so without the bisection-progress guard the search
+        // runs out of iterations short of it. References from mpmath (dps=60).
+        let cases: &[(f64, f64, f64, f64)] = &[
+            (1.0, 1.0, 1e-100, 0.0043429448190325185),
+            (1.0, 1.0, 1e-200, 0.0021714724095162593),
+            (1.0, 1.0, 1e-300, 0.0014476482730108394),
+            (0.01, 1.0, 1e-200, 0.00222287682578071),
+            (0.01, 1.0, 1e-300, 0.0014711980613782147),
+            (100.0, 1.0, 1e-100, 0.0020694527796494867),
+            (100.0, 1.0, 1e-200, 0.0013193408747368574),
+            (1.0, 400.0, 1e-300, 0.5790593092043358),
+            (0.5, 1e6, 1e-200, 2188.7520668986626),
+        ];
+        for &(a, b, p, expected) in cases {
+            let q = InverseGamma::new(a, b).unwrap().inverse_cdf(p);
+            let relerr = ((q - expected) / expected).abs();
+            assert!(relerr <= 1e-14, "InverseGamma({a}, {b}).inverse_cdf({p}) = {q}, want {expected} (relerr {relerr:e})");
+        }
+    }
+
+    #[test]
+    fn test_inverse_cdf_p0_p1() {
+        let d = create_ok(1.0, 1.0);
+        assert_eq!(d.inverse_cdf(0.0), d.min());
+        assert_eq!(d.inverse_cdf(1.0), d.max());
+    }
+
+    #[test]
+    #[should_panic(expected = "p must be in [0, 1]")]
+    fn test_inverse_cdf_p_above_one() {
+        create_ok(1.0, 1.0).inverse_cdf(1.0 + f64::EPSILON);
+    }
+
+    #[test]
+    #[should_panic(expected = "p must be in [0, 1]")]
+    fn test_inverse_cdf_p_below_zero() {
+        create_ok(1.0, 1.0).inverse_cdf(-1e-300);
     }
 }

@@ -1,6 +1,5 @@
 use crate::statistics::*;
 use core::borrow::Borrow;
-use core::f64;
 #[cfg(not(feature = "std"))]
 use num_traits::Float as _;
 
@@ -37,10 +36,10 @@ where
 }
 
 /// Branchless NaN-propagating reduction: `f` picks the running value, while a
-/// separate flag records whether any input was NaN. `f64::min`/`f64::max`
-/// ignore NaN operands, so the flag is what preserves the documented
-/// "any NaN => NaN" contract; keeping it out of the comparison lets the loop
-/// vectorise (~6x on 1M-element slices).
+/// separate flag records whether any input was NaN. `f` ignores NaN operands,
+/// so the flag is what preserves the documented "any NaN => NaN" contract;
+/// keeping it out of the comparison lets the loop vectorise (~6x on
+/// 1M-element slices).
 fn fold_nan_propagating<I>(iter: I, init: f64, f: impl Fn(f64, f64) -> f64) -> f64
 where
     I: Iterator,
@@ -65,7 +64,14 @@ where
         let mut iter = self.into_iter();
         match iter.next() {
             None => f64::NAN,
-            Some(x) => fold_nan_propagating(iter, *x.borrow(), f64::min),
+            // A strict comparison rather than `f64::min`: the latter may return
+            // either operand when they compare equal, so it picks between -0.0
+            // and +0.0 non-deterministically (statrs-dev/statrs#407). Keeping
+            // the running value on ties makes the result the first such zero,
+            // and still lowers to a branchless select.
+            Some(x) => {
+                fold_nan_propagating(iter, *x.borrow(), |acc, x| if x < acc { x } else { acc })
+            }
         }
     }
 
@@ -73,7 +79,10 @@ where
         let mut iter = self.into_iter();
         match iter.next() {
             None => f64::NAN,
-            Some(x) => fold_nan_propagating(iter, *x.borrow(), f64::max),
+            // See `min`: a strict comparison, not `f64::max`.
+            Some(x) => {
+                fold_nan_propagating(iter, *x.borrow(), |acc, x| if x > acc { x } else { acc })
+            }
         }
     }
 

@@ -1,9 +1,9 @@
 use crate::distribution::ContinuousCDF;
 use crate::statistics::*;
+use alloc::collections::btree_map::{BTreeMap, Entry};
 use core::convert::Infallible;
 use core::ops::Bound;
 use non_nan::NonNan;
-use std::collections::btree_map::{BTreeMap, Entry};
 
 mod non_nan {
     use core::cmp::Ordering;
@@ -258,7 +258,7 @@ impl Median<f64> for Empirical {
         // ascending order, so accumulating counts gives order statistics.
         let n = self.sum;
         let lower_rank = (n - 1) / 2;
-        let need_two = n % 2 == 0;
+        let need_two = n.is_multiple_of(2);
 
         let mut seen = 0;
         let mut lower = None;

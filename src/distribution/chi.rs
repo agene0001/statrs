@@ -1,7 +1,7 @@
 use crate::distribution::{Continuous, ContinuousCDF};
 use crate::function::gamma;
 use crate::statistics::*;
-use core::f64;
+use core::f64::consts as f64_consts;
 use core::num::NonZeroU64;
 #[cfg(not(feature = "std"))]
 use num_traits::Float as _;
@@ -148,6 +148,32 @@ impl ContinuousCDF<f64, f64> for Chi {
             gamma::gamma_ur(self.freedom() as f64 / 2.0, x * x / 2.0)
         }
     }
+
+    /// Calculates the inverse cumulative distribution function for the chi
+    /// distribution at `p`, i.e. the `p`-quantile.
+    ///
+    /// # Panics
+    ///
+    /// If `p` is not in `[0, 1]`.
+    fn inverse_cdf(&self, p: f64) -> f64 {
+        if !(0.0..=1.0).contains(&p) {
+            panic!("p must be in [0, 1]")
+        }
+        if p == 0.0 {
+            return self.min();
+        }
+        if p == 1.0 {
+            return self.max();
+        }
+        // The chi cdf has no closed-form inverse; solve it with the shared
+        // safeguarded Newton search instead of the generic bisection default.
+        super::internal::newton_raphson_quantile(
+            p,
+            |x| self.cdf(x),
+            |x| self.sf(x),
+            |x| self.pdf(x),
+        )
+    }
 }
 
 impl Min<f64> for Chi {
@@ -208,7 +234,7 @@ impl Distribution<f64> for Chi {
                         * (1.0 - 0.046875 / (freedom * freedom * freedom))),
             )
         } else {
-            let mean = f64::consts::SQRT_2 * gamma::gamma((freedom + 1.0) / 2.0)
+            let mean = f64_consts::SQRT_2 * gamma::gamma((freedom + 1.0) / 2.0)
                 / gamma::gamma(freedom / 2.0);
             Some(mean)
         }
@@ -420,7 +446,7 @@ mod tests {
         let mode = |x: Chi| x.mode().unwrap();
         test_exact(1, 0.0, mode);
         test_exact(2, 1.0, mode);
-        test_exact(3, f64::consts::SQRT_2, mode);
+        test_exact(3, f64_consts::SQRT_2, mode);
     }
 
     #[test]
@@ -573,5 +599,24 @@ mod tests {
                 assert!((back - p).abs() <= 1e-9 * p, "Chi({k}) round-trip p={p}: cdf(inverse_cdf(p))={back}");
             }
         }
+    }
+
+    #[test]
+    fn test_inverse_cdf_p0_p1() {
+        let d = create_ok(3);
+        assert_eq!(d.inverse_cdf(0.0), d.min());
+        assert_eq!(d.inverse_cdf(1.0), d.max());
+    }
+
+    #[test]
+    #[should_panic(expected = "p must be in [0, 1]")]
+    fn test_inverse_cdf_p_above_one() {
+        create_ok(3).inverse_cdf(1.0 + f64::EPSILON);
+    }
+
+    #[test]
+    #[should_panic(expected = "p must be in [0, 1]")]
+    fn test_inverse_cdf_p_below_zero() {
+        create_ok(3).inverse_cdf(-1e-300);
     }
 }

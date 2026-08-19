@@ -1,7 +1,6 @@
 use crate::distribution::{Discrete, DiscreteCDF};
-use crate::prec;
 use crate::statistics::*;
-use core::f64;
+use core::f64::consts as f64_consts;
 #[cfg(not(feature = "std"))]
 use num_traits::Float as _;
 use num_traits::{One, Zero};
@@ -101,7 +100,7 @@ impl core::fmt::Display for Geometric {
 #[cfg_attr(docsrs, doc(cfg(feature = "rand")))]
 impl ::rand::distr::Distribution<u64> for Geometric {
     fn sample<R: ::rand::Rng + ?Sized>(&self, r: &mut R) -> u64 {
-        if prec::ulps_eq!(self.p, 1.0) {
+        if self.p == 1.0 {
             1
         } else {
             let x: f64 = r.sample(::rand::distr::OpenClosed01);
@@ -133,6 +132,11 @@ impl DiscreteCDF<u64, f64> for Geometric {
     fn cdf(&self, x: u64) -> f64 {
         if x == 0 {
             0.0
+        } else if x == 1 {
+            // Mathematically cdf(1) = p. Evaluating via expm1/ln1p can
+            // undershoot by a ulp on some platforms (notably MSVC), which then
+            // makes inverse_cdf(p) pick k=2 via the definition check.
+            self.p
         } else {
             // 1 - (1 - p) ^ x = 1 - exp(log(1 - p)*x)
             //                 = -expm1(log1p(-p)*x))
@@ -154,6 +158,9 @@ impl DiscreteCDF<u64, f64> for Geometric {
         //           = exp(log1p(-p) * x)
         if x == 0 {
             1.0
+        } else if x == 1 {
+            // Mathematically sf(1) = 1 - p. Keep exact to match cdf(1) = p.
+            1.0 - self.p
         } else {
             ((-self.p).ln_1p() * (x as f64)).exp()
         }
@@ -182,11 +189,17 @@ impl DiscreteCDF<u64, f64> for Geometric {
     /// geometric distribution at `x`.
     /// In other languages, such as R, this is known as the quantile function.
     ///
+    /// Returns the least `k` such that `cdf(k) >= x`.
+    ///
     /// # Formula
     ///
     /// ```text
     /// k = ceil(log(1 - x) / log(1 - p))
     /// ```
+    ///
+    /// The closed form is only approximately integral at the step boundaries, so
+    /// the result is corrected against the definition above (and falls back to
+    /// bisection near the upper tail where `1 - x` loses precision).
     ///
     /// # Panics
     ///
@@ -204,8 +217,14 @@ impl DiscreteCDF<u64, f64> for Geometric {
         if !(<f64>::zero()..=<f64>::one()).contains(&x) {
             panic!("x must be in [0, 1]");
         }
-        if prec::ulps_eq!(self.p, 1.0) {
+        if self.p == 1.0 {
             // degenerate distribution: all mass at k=1
+            return self.min();
+        }
+        // cdf(1) = p exactly, so every probability in (0, p] maps to the mode.
+        // Handle this before the closed form so platform-dependent ln1p/expm1
+        // noise in cdf cannot push the answer to 2 (observed on Windows MSVC).
+        if x <= self.p {
             return self.min();
         }
         let k = (-x).ln_1p() / (-self.p).ln_1p();
@@ -222,39 +241,42 @@ impl DiscreteCDF<u64, f64> for Geometric {
                 self.p, x
             );
         }
+
         // `ln1p(-x) / ln1p(-p)` is only approximately integral at the step
-        // boundaries, so `ceil` lands on either side of the true one and
-        // `inverse_cdf(cdf(k)) != k` for most `p` (statrs-dev/statrs#342).
-        // Everything below corrects the closed form against the definition
-        // being inverted: the least `k` with `cdf(k) >= x`.
+        // boundaries, so plain `ceil` can land on either side of the true
+        // quantile and break `inverse_cdf(cdf(k)) == k` (statrs-dev/statrs#342).
+        // Correct the closed form against the definition: least k with cdf(k) >= x.
         let candidate = (k.max(1.0) as u64).max(self.min());
         let is_answer = |k: u64| self.cdf(k) >= x && (k <= self.min() || self.cdf(k - 1) < x);
 
         // Ordinary rounding puts the closed form within one step, so this is
-        // the path essentially always taken - two or three `cdf` evaluations.
+        // the path essentially always taken: two or three cdf evaluations.
         if is_answer(candidate) {
             return candidate;
         }
         if candidate > self.min() && is_answer(candidate - 1) {
             return candidate - 1;
         }
-        if is_answer(candidate + 1) {
+        if candidate < u64::MAX && is_answer(candidate + 1) {
             return candidate + 1;
         }
 
-        // Once `x` is within a few ulp of 1, `1 - x` has lost every significant
-        // bit and the closed form can be off by an unbounded number of steps
-        // (`cdf` has a long plateau there - about 1/p wide). Bisect instead,
-        // which is exact by definition regardless of how far off `candidate` is.
+        // Once x is within a few ulp of 1, `1 - x` has lost significant bits and
+        // the closed form can be off by an unbounded number of steps (cdf has a
+        // plateau roughly 1/p wide there). Bisect instead; exact by definition.
         let mut hi = candidate;
         while self.cdf(hi) < x {
-            let Some(doubled) = hi.checked_mul(2) else {
-                hi = u64::MAX;
-                break;
-            };
-            hi = doubled;
+            match hi.checked_mul(2) {
+                Some(doubled) => hi = doubled,
+                None => {
+                    hi = u64::MAX;
+                    break;
+                }
+            }
         }
         let mut lo = self.min();
+        // If the closed-form candidate overshot, pull the upper bound down and
+        // start the lower bound from min; bisection still finds the least k.
         while lo < hi {
             let mid = lo + (hi - lo) / 2;
             if self.cdf(mid) >= x {
@@ -293,11 +315,7 @@ impl Max<u64> for Geometric {
     /// 2^63 - 1
     /// ```
     fn max(&self) -> u64 {
-        if prec::ulps_eq!(self.p, 1.0) {
-            1
-        } else {
-            u64::MAX
-        }
+        if self.p == 1.0 { 1 } else { u64::MAX }
     }
 }
 
@@ -344,7 +362,7 @@ impl Distribution<f64> for Geometric {
     /// (2 - p) / sqrt(1 - p)
     /// ```
     fn skewness(&self) -> Option<f64> {
-        if prec::ulps_eq!(self.p, 1.0) {
+        if self.p == 1.0 {
             return Some(f64::INFINITY);
         };
         Some((2.0 - self.p) / (1.0 - self.p).sqrt())
@@ -375,7 +393,7 @@ impl Median<f64> for Geometric {
     /// ceil(-1 / log_2(1 - p))
     /// ```
     fn median(&self) -> f64 {
-        (-f64::consts::LN_2 / (1.0 - self.p).ln()).ceil()
+        (-f64_consts::LN_2 / (1.0 - self.p).ln()).ceil()
     }
 }
 
@@ -407,9 +425,9 @@ impl Discrete<u64, f64> for Geometric {
     fn ln_pmf(&self, x: u64) -> f64 {
         if x == 0 {
             f64::NEG_INFINITY
-        } else if prec::ulps_eq!(self.p, 1.0) && x == 1 {
+        } else if self.p == 1.0 && x == 1 {
             0.0
-        } else if prec::ulps_eq!(self.p, 1.0) {
+        } else if self.p == 1.0 {
             f64::NEG_INFINITY
         } else {
             ((x - 1) as f64 * (1.0 - self.p).ln()) + self.p.ln()
@@ -430,6 +448,16 @@ mod tests {
     fn test_create() {
         create_ok(0.3);
         create_ok(1.0);
+    }
+
+    #[test]
+    #[cfg(feature = "rand")]
+    fn test_sample_degenerate() {
+        use rand::{distr::Distribution as _, rngs::StdRng, SeedableRng};
+
+        let mut rng = StdRng::seed_from_u64(437);
+        let sample: u64 = create_ok(1.0).sample(&mut rng);
+        assert_eq!(sample, 1);
     }
 
     #[test]
@@ -521,6 +549,16 @@ mod tests {
         test_absolute(0.3, -1.560647748264668371535, 1e-15, ln_pmf(2));
         test_exact(1.0, 0.0, ln_pmf(1));
         test_exact(1.0, f64::NEG_INFINITY, ln_pmf(2));
+    }
+
+    #[test]
+    fn test_probability_near_one_is_not_degenerate() {
+        let p = 1.0 - 5e-10;
+        let dist = create_ok(p);
+        assert_eq!(dist.max(), u64::MAX);
+        prec::assert_relative_eq!(dist.ln_pmf(2), ((1.0 - p) * p).ln());
+        assert!(dist.skewness().unwrap().is_finite());
+        assert_eq!(dist.inverse_cdf((1.0 + p) / 2.0), 2);
     }
 
     #[test]
@@ -635,9 +673,8 @@ mod tests {
     /// `inverse_cdf` must return the least `k` with `cdf(k) >= x`, and so must
     /// round-trip `cdf` wherever `cdf` is injective.
     ///
-    /// The closed form `ceil(ln1p(-x) / ln1p(-p))` is only approximately
-    /// integral at the step boundaries, so on its own it landed on the wrong
-    /// side for 7255 of 16200 (p, k) pairs (statrs-dev/statrs#342).
+    /// The closed form `ceil(ln1p(-x) / ln1p(-p))` alone landed on the wrong
+    /// side for thousands of (p, k) pairs (statrs-dev/statrs#342).
     #[test]
     fn test_inverse_cdf_round_trips_and_matches_definition() {
         let mut mismatches = 0;
@@ -705,11 +742,28 @@ mod tests {
         let invcdf = |arg: f64| move |x: Geometric| x.inverse_cdf(arg);
         test_exact(1., 1, invcdf(0.));
         test_exact(1., 1, invcdf(1.));
+        // Support starts at 1 (trials until first success). cdf(1) = p, so
+        // inverse_cdf(p) must be 1 for any valid p — including values where
+        // ln1p/expm1 would otherwise undershoot p by a ulp (e.g. p=0.25).
         test_exact(0.2, 1, invcdf(0.2));
+        test_exact(0.25, 1, invcdf(0.25));
         test_exact(0.2, u64::MAX, invcdf(1.));
         test_exact(0.004, 173, invcdf(0.5));
         test_exact(0.5, u64::MAX, invcdf(1.));
         test_exact(0.5, 2, invcdf(0.75));
+    }
+
+    #[test]
+    fn test_cdf_one_is_exactly_p() {
+        // Guard the special-case that keeps inverse_cdf(p) == 1 portable.
+        for p in [0.1f64, 0.2, 0.25, 0.3, 0.5, 0.9, 1.0] {
+            let g = create_ok(p);
+            assert_eq!(g.cdf(1), p, "cdf(1) must equal p exactly");
+            assert_eq!(g.sf(1), 1.0 - p, "sf(1) must equal 1-p exactly");
+            if p < 1.0 {
+                assert_eq!(g.inverse_cdf(p), 1);
+            }
+        }
     }
 
     #[test]
